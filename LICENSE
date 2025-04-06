@@ -1,0 +1,22 @@
+Business Source License 1.1
+
+Parameters
+
+Licensor:              SSK Innovations
+Licensed Work:         NebulaDB
+License Grant:         The Licensed Work may be used, copied, modified, and distributed, provided that the use is non-production and non-commercial.
+Change Date:           2029-01-01
+Change License:        Apache License 2.0
+
+Additional Use Grant:
+  You may freely use NebulaDB for personal, educational, or research purposes, including academic publishing, prototyping, and internal development by individual developers.
+
+License Text:
+
+The Licensed Work is provided under the terms of the Business Source License, version 1.1, as published by MariaDB Corporation Ab.
+
+Any use of the Licensed Work, other than as permitted under this License, requires a commercial agreement with the Licensor.
+
+On the Change Date, the License will automatically be replaced with the Change License.
+
+The full license text is available at: https://mariadb.com/bsl11
