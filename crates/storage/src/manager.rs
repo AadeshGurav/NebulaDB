@@ -386,4 +386,125 @@ impl BlockManager {
         // Document not found in this block
         Ok(None)
     }
+    
+    /// Scan all blocks for document IDs
+    pub fn scan_document_ids(&self) -> Result<Vec<Vec<u8>>> {
+        let mut document_ids = Vec::new();
+        
+        // First scan the active block if it exists
+        if let Some(block) = &self.active_block {
+            let ids = self.scan_block_for_document_ids(block)?;
+            document_ids.extend(ids);
+        }
+        
+        // If no block file exists, return the results from the active block
+        if !self.base_file_path.exists() {
+            return Ok(document_ids);
+        }
+        
+        // Open the file
+        let mut file = File::open(&self.base_file_path)
+            .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?;
+        
+        // Determine how many blocks are in the file
+        let file_size = file.metadata()
+            .map_err(|e| Error::Other(format!("Failed to get metadata: {}", e)))?.len();
+        
+        if file_size == 0 {
+            return Ok(document_ids);
+        }
+        
+        // Read each block and scan for document IDs
+        for block_idx in 0..self.current_block_idx {
+            // Seek to the block
+            let mock_block = Block::new(self.config.compression);
+            let block_size = mock_block.size() as u64;
+            let position = block_idx as u64 * block_size;
+            
+            if position >= file_size {
+                continue;
+            }
+            
+            file.seek(SeekFrom::Start(position))
+                .map_err(|e| Error::Other(format!("Failed to seek in file: {}", e)))?;
+            
+            // Read the entire block
+            let mut block_data = vec![0u8; block_size as usize];
+            
+            // Use read instead of read_exact to handle end of file gracefully
+            let bytes_read = file.read(&mut block_data)
+                .map_err(|e| Error::Other(format!("Failed to read block: {}", e)))?;
+            
+            if bytes_read < BlockHeader::SIZE {
+                continue;
+            }
+            
+            // Parse the block
+            let block = match Block::from_bytes(&block_data[0..bytes_read]) {
+                Ok(b) => b,
+                Err(_) => continue, // Skip invalid blocks
+            };
+            
+            // Scan this block for document IDs
+            let ids = self.scan_block_for_document_ids(&block)?;
+            document_ids.extend(ids);
+        }
+        
+        Ok(document_ids)
+    }
+
+    /// Scan a block for all document IDs
+    fn scan_block_for_document_ids(&self, block: &Block) -> Result<Vec<Vec<u8>>> {
+        let mut document_ids = Vec::new();
+        
+        // If the block is empty, return empty list
+        if block.data.is_empty() {
+            return Ok(document_ids);
+        }
+        
+        let mut offset = 0;
+        
+        // Iterate through document entries in the block
+        while offset < block.data.len() {
+            // Check if we have enough data for an ID length
+            if offset + 2 > block.data.len() {
+                break;
+            }
+            
+            // Read ID length
+            let id_len = u16::from_le_bytes([
+                block.data[offset],
+                block.data[offset + 1],
+            ]) as usize;
+            
+            // Check if we have enough data for the ID
+            if offset + 2 + id_len > block.data.len() {
+                break;
+            }
+            
+            // Read ID
+            let entry_id = block.data[offset + 2..offset + 2 + id_len].to_vec();
+            
+            // Add to our list if it's not a tombstone ID (doesn't start and end with underscore)
+            if !(entry_id.starts_with(b"_") && entry_id.ends_with(b"_")) {
+                document_ids.push(entry_id);
+            }
+            
+            // Move to the next document entry
+            if offset + 2 + id_len + 4 > block.data.len() {
+                break;
+            }
+            
+            let data_len = u32::from_le_bytes([
+                block.data[offset + 2 + id_len],
+                block.data[offset + 2 + id_len + 1],
+                block.data[offset + 2 + id_len + 2],
+                block.data[offset + 2 + id_len + 3],
+            ]) as usize;
+            
+            offset += 2 + id_len + 4 + data_len;
+        }
+        
+        Ok(document_ids)
+    }
 }

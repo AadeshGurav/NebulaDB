@@ -43,18 +43,72 @@ impl Collection {
         self.block_manager.insert(id, data)
     }
     
+    /// Get a list of all document IDs in the collection
+    pub fn scan(&self) -> Result<Vec<Vec<u8>>> {
+        self.block_manager.scan_document_ids()
+    }
+    
     /// Retrieve a document from the collection
     pub fn get(&self, id: &[u8]) -> Result<Option<Vec<u8>>> {
-        // Use the block manager to find the document
-        self.block_manager.find_document(id)
+        // Check if the document exists
+        match self.block_manager.find_document(id)? {
+            Some(data) => {
+                // Check if this document has been logically deleted
+                // by looking for a tombstone with a special ID
+                let mut tombstone_id = Vec::with_capacity(id.len() + 2);
+                tombstone_id.push(b'_');  // Prefix with underscore
+                tombstone_id.extend_from_slice(id);
+                tombstone_id.push(b'_');  // Suffix with underscore
+                
+                // If a tombstone exists, consider the document deleted
+                match self.block_manager.find_document(&tombstone_id)? {
+                    Some(_) => Ok(None), // Document was deleted
+                    None => Ok(Some(data)), // Document exists and is not deleted
+                }
+            },
+            None => Ok(None), // Document not found
+        }
     }
     
     /// Delete a document from the collection
-    pub fn delete(&mut self, _id: &[u8]) -> Result<bool> {
-        // This is just a stub - it will need to be implemented
-        // The implementation would likely mark the document as deleted
-        // in its block and update indexes accordingly
-        Err(Error::Other("Not implemented".to_string()))
+    pub fn delete(&mut self, id: &[u8]) -> Result<bool> {
+        // In our initial implementation, we'll simply create a special
+        // document entry that marks the original document as deleted
+        
+        // First, check if the document exists
+        let exists = match self.get(id)? {
+            Some(_) => true,
+            None => false,
+        };
+        
+        if !exists {
+            return Ok(false); // Document not found
+        }
+        
+        // Create a tombstone document (a special marker indicating deletion)
+        // In a real implementation, you'd store this in a structured way
+        let tombstone_data = format!("{{\"_deleted\": true, \"_id\": \"{}\", \"_deleted_at\": {}}}",
+            String::from_utf8_lossy(id),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ).into_bytes();
+        
+        // Insert the tombstone with a special ID format to mark deletion
+        let mut tombstone_id = Vec::with_capacity(id.len() + 2);
+        tombstone_id.push(b'_');  // Prefix with underscore
+        tombstone_id.extend_from_slice(id);
+        tombstone_id.push(b'_');  // Suffix with underscore
+        
+        // Insert the tombstone
+        self.block_manager.insert(&tombstone_id, &tombstone_data)?;
+        
+        // Note: This approach doesn't actually remove the original document,
+        // it just adds a tombstone. A background job or compaction process
+        // would be responsible for actually cleaning up deleted documents.
+        
+        Ok(true)
     }
     
     /// Close the collection, flushing any pending changes
