@@ -6,3 +6,5 @@ Cargo.lock
 .env
 /tests/data/*
 /nebuladb_data/
+.nebuladb_history
+data/*
