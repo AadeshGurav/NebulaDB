@@ -1,0 +1,11 @@
+[package]
+name = "nebuladb-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nebuladb-core = { path = "../../crates/core" }
+nebuladb-storage = { path = "../../crates/storage" }
+nebuladb-index = { path = "../../crates/index" }
+nebuladb-wal = { path = "../../crates/wal" }
+nebuladb-query = { path = "../../crates/query" }

@@ -1,0 +1,14 @@
+# Cargo.toml (in root)
+[workspace]
+members = [
+    "crates/core",
+    "crates/storage",
+    "crates/index",
+    "crates/wal",
+    "crates/query",
+    "crates/cli",
+    "crates/archive",
+    "crates/graph",
+    "apps/server"
+]
+resolver = "2"
