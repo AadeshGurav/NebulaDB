@@ -9,3 +9,5 @@ nebuladb-storage = { path = "../../crates/storage" }
 nebuladb-index = { path = "../../crates/index" }
 nebuladb-wal = { path = "../../crates/wal" }
 nebuladb-query = { path = "../../crates/query" }
+nebuladb-cli = { path = "../../crates/cli" }
+clap = { version = "3.0", features = ["derive"] }

@@ -7,8 +7,9 @@ pub mod block;
 pub mod manager;
 pub mod compression;
 pub mod file;
+pub mod wal_integration;
 
-use nebuladb_core::{Error, Result, Config};
+use nebuladb_core::{Result, Config};
 
 /// Storage engine configuration
 #[derive(Debug, Clone)]
@@ -117,7 +118,7 @@ impl BlockFooter {
 }
 
 /// Represents a document storage block
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     /// Block header
     pub header: BlockHeader,

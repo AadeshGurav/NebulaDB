@@ -4,11 +4,10 @@ members = [
     "crates/core",
     "crates/storage",
     "crates/index",
-    "crates/wal",
     "crates/query",
-    "crates/cli",
-    "crates/archive",
+    "crates/wal",
     "crates/graph",
-    "apps/server"
+    "crates/archive",
+#    "crates/cli",
 ]
 resolver = "2"

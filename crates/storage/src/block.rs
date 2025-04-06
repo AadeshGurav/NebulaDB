@@ -1,8 +1,7 @@
 //! Block-level operations for NebulaDB storage
 
-use crate::{Block, BlockHeader, BlockFooter, CompressionType, compression};
+use crate::{Block, BlockHeader, BlockFooter, CompressionType};
 use nebuladb_core::{Error, Result};
-use std::io::{Read, Write};
 
 /// Document entry in a block
 #[derive(Debug, Clone)]

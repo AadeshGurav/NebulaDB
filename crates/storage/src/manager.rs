@@ -1,203 +1,237 @@
-//! Block manager for NebulaDB storage engine
+//! Block manager for NebulaDB storage
 
-use crate::{Block, BlockHeader, BlockFooter, CompressionType, StorageConfig, Result};
-use nebuladb_core::Error;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use crate::{Block, StorageConfig, Result};
+use std::io::{Write, Seek, SeekFrom, Read};
+use std::path::PathBuf;
+use crate::block::{BlockOperations, DocumentEntry};
+use nebuladb_core::Error;
 
-/// Manages storage blocks for a collection
+/// Maximum size of blocks in MB
+pub const MAX_BLOCK_SIZE: usize = 4;
+
+/// Block manager for a collection
 pub struct BlockManager {
-    /// Configuration for the storage engine
+    /// Name of the collection
+    name: String,
+    /// Path to the collection files
+    path: PathBuf,
+    /// Configuration
     config: StorageConfig,
-    /// Path to the collection directory
-    collection_path: PathBuf,
-    /// Current active block for writing
+    /// Current active block
     active_block: Option<Block>,
-    /// Number of documents in the active block
-    doc_count: u32,
-    /// Total uncompressed size of documents in the active block
-    uncompressed_size: u64,
+    /// Current block index
+    current_block_idx: u32,
+    /// Base file path (collection/blocks.bin)
+    base_file_path: PathBuf,
 }
 
 impl BlockManager {
-    /// Create a new block manager for the given collection
-    pub fn new(config: StorageConfig, collection_name: &str) -> Result<Self> {
-        let collection_path = Path::new(&config.base.data_dir).join(collection_name);
+    /// Create a new block manager
+    pub fn new(name: &str, path: PathBuf, config: StorageConfig) -> Self {
+        let base_file_path = path.join("blocks.bin");
         
-        // Create the collection directory if it doesn't exist
-        std::fs::create_dir_all(&collection_path)
-            .map_err(|e| Error::IoError(e))?;
-        
-        Ok(Self {
+        Self {
+            name: name.to_string(),
+            path,
             config,
-            collection_path,
             active_block: None,
-            doc_count: 0,
-            uncompressed_size: 0,
-        })
+            current_block_idx: 0,
+            base_file_path,
+        }
     }
     
-    /// Get the path to the data file for the given block index
-    fn data_file_path(&self, block_index: u32) -> PathBuf {
-        self.collection_path.join(format!("data_{:08}.nbl", block_index))
-    }
-    
-    /// Initialize a new active block
-    fn init_active_block(&mut self) -> Result<()> {
-        let block = Block::new(self.config.compression);
-        self.active_block = Some(block);
-        self.doc_count = 0;
-        self.uncompressed_size = 0;
-        Ok(())
-    }
-    
-    /// Add a document to the active block
-    pub fn add_document(&mut self, doc_id: &[u8], doc_data: &[u8]) -> Result<()> {
-        // Initialize active block if needed
+    /// Ensure the active block is initialized
+    fn ensure_active_block(&mut self) -> Result<()> {
         if self.active_block.is_none() {
-            self.init_active_block()?;
-        }
-        
-        let block = self.active_block.as_mut().unwrap();
-        
-        // Format: [doc_id_len(2)][doc_id][doc_data_len(4)][doc_data]
-        let doc_id_len = doc_id.len() as u16;
-        let doc_data_len = doc_data.len() as u32;
-        
-        // Calculate total size
-        let total_size = 2 + doc_id.len() + 4 + doc_data.len();
-        
-        // Check if we need to flush the current block (either due to size or count)
-        if self.uncompressed_size + total_size as u64 > self.config.block_size as u64 ||
-           self.doc_count >= self.config.flush_threshold {
-            self.flush()?;
-            self.init_active_block()?;
-        }
-        
-        // Append document to active block data (uncompressed for now)
-        // In a real implementation, this would be compressed
-        let block = self.active_block.as_mut().unwrap();
-        
-        // Write doc_id length (2 bytes)
-        block.data.extend_from_slice(&doc_id_len.to_le_bytes());
-        // Write doc_id
-        block.data.extend_from_slice(doc_id);
-        // Write doc_data length (4 bytes)
-        block.data.extend_from_slice(&doc_data_len.to_le_bytes());
-        // Write doc_data
-        block.data.extend_from_slice(doc_data);
-        
-        // Update counts
-        self.doc_count += 1;
-        self.uncompressed_size += total_size as u64;
-        
-        Ok(())
-    }
-    
-    /// Flush the active block to disk
-    pub fn flush(&mut self) -> Result<()> {
-        if let Some(block) = self.active_block.as_mut() {
-            // In a real implementation, we would compress the data here
-            // and compute the checksum
-            
-            // Update header
-            block.header.doc_count = self.doc_count;
-            block.header.uncompressed_size = self.uncompressed_size;
-            block.header.compressed_size = block.data.len() as u64;
-            
-            // Compute a simple checksum (in reality, use CRC32 or similar)
-            let checksum = block.data.iter().fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
-            block.footer.checksum = checksum;
-            
-            // Find the next available block index
-            let mut block_index = 0;
-            while self.data_file_path(block_index).exists() {
-                block_index += 1;
+            // Check if we have an existing block file
+            if self.base_file_path.exists() {
+                // If so, find the next block index
+                self.current_block_idx = self.find_next_block_idx()?;
             }
             
-            // Write to file
-            let path = self.data_file_path(block_index);
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&path)
-                .map_err(|e| Error::IoError(e))?;
-            
-            // Write header
-            file.write_all(&block.header.magic).map_err(|e| Error::IoError(e))?;
-            file.write_all(&[block.header.version]).map_err(|e| Error::IoError(e))?;
-            file.write_all(&[block.header.compression as u8]).map_err(|e| Error::IoError(e))?;
-            file.write_all(&block.header.doc_count.to_le_bytes()).map_err(|e| Error::IoError(e))?;
-            file.write_all(&block.header.uncompressed_size.to_le_bytes()).map_err(|e| Error::IoError(e))?;
-            file.write_all(&block.header.compressed_size.to_le_bytes()).map_err(|e| Error::IoError(e))?;
-            file.write_all(&block.header.created_at.to_le_bytes()).map_err(|e| Error::IoError(e))?;
-            
-            // Write data
-            file.write_all(&block.data).map_err(|e| Error::IoError(e))?;
-            
-            // Write footer
-            file.write_all(&block.footer.checksum.to_le_bytes()).map_err(|e| Error::IoError(e))?;
-            file.write_all(&block.footer.magic).map_err(|e| Error::IoError(e))?;
-            
-            // Reset active block
-            self.active_block = None;
-            self.doc_count = 0;
-            self.uncompressed_size = 0;
+            // Create a new block
+            let block = Block::new(self.config.compression);
+            self.active_block = Some(block);
         }
+        
+        Ok(())
+    }
+    
+    /// Flush the current block to disk if it's past the threshold
+    fn flush_if_needed(&mut self) -> Result<()> {
+        if let Some(_) = self.active_block.as_ref() {
+            // Check if we're past the threshold
+            let block_size = self.active_block.as_ref().unwrap().size();
+            if block_size >= self.config.flush_threshold as usize {
+                self.flush()?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Flush the current block to disk
+    pub fn flush(&mut self) -> Result<()> {
+        if let Some(block) = self.active_block.as_ref() {
+            // Create a copy of the block before we use it
+            let block_copy = block.clone();
+            
+            // Create or open the file
+            let file_exists = self.base_file_path.exists();
+            let mut file = if file_exists {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&self.base_file_path)
+                    .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?
+            } else {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&self.base_file_path)
+                    .map_err(|e| Error::Other(format!("Failed to create file: {}", e)))?
+            };
+            
+            // Calculate position in the file
+            let block_size = block_copy.size() as u64;
+            let position = self.current_block_idx as u64 * block_size;
+            
+            // Seek to the position
+            file.seek(SeekFrom::Start(position))
+                .map_err(|e| Error::Other(format!("Failed to seek in file: {}", e)))?;
+            
+            // Write the block header
+            file.write_all(&block_copy.header.magic)
+                .map_err(|e| Error::Other(format!("Failed to write header magic: {}", e)))?;
+            file.write_all(&[block_copy.header.version])
+                .map_err(|e| Error::Other(format!("Failed to write header version: {}", e)))?;
+            file.write_all(&[block_copy.header.compression as u8])
+                .map_err(|e| Error::Other(format!("Failed to write header compression: {}", e)))?;
+            file.write_all(&block_copy.header.doc_count.to_le_bytes())
+                .map_err(|e| Error::Other(format!("Failed to write doc count: {}", e)))?;
+            file.write_all(&block_copy.header.uncompressed_size.to_le_bytes())
+                .map_err(|e| Error::Other(format!("Failed to write uncompressed size: {}", e)))?;
+            file.write_all(&block_copy.header.compressed_size.to_le_bytes())
+                .map_err(|e| Error::Other(format!("Failed to write compressed size: {}", e)))?;
+            file.write_all(&block_copy.header.created_at.to_le_bytes())
+                .map_err(|e| Error::Other(format!("Failed to write created at: {}", e)))?;
+            
+            // Write the block data
+            file.write_all(&block_copy.data)
+                .map_err(|e| Error::Other(format!("Failed to write block data: {}", e)))?;
+            
+            // Write the block footer
+            file.write_all(&block_copy.footer.checksum.to_le_bytes())
+                .map_err(|e| Error::Other(format!("Failed to write footer checksum: {}", e)))?;
+            file.write_all(&block_copy.footer.magic)
+                .map_err(|e| Error::Other(format!("Failed to write footer magic: {}", e)))?;
+            
+            // Increment the block index and create a new active block
+            self.current_block_idx += 1;
+            self.active_block = Some(Block::new(self.config.compression));
+            
+            // Sync the file to disk
+            file.sync_all()
+                .map_err(|e| Error::Other(format!("Failed to sync file: {}", e)))?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Find the next available block index
+    fn find_next_block_idx(&self) -> Result<u32> {
+        if !self.base_file_path.exists() {
+            return Ok(0);
+        }
+        
+        let file = File::open(&self.base_file_path)
+            .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?;
+        let file_size = file.metadata()
+            .map_err(|e| Error::Other(format!("Failed to get metadata: {}", e)))?.len();
+        
+        if file_size == 0 {
+            return Ok(0);
+        }
+        
+        // For simplicity, we assume all blocks are of the same size
+        // In a real implementation, we would need to read the headers
+        // to determine the actual block sizes
+        let block = Block::new(self.config.compression);
+        let block_size = block.size() as u64;
+        
+        let num_blocks = file_size / block_size;
+        
+        Ok(num_blocks as u32)
+    }
+    
+    /// Insert a document into the block manager
+    pub fn insert(&mut self, id: &[u8], data: &[u8]) -> Result<()> {
+        // Ensure we have an active block
+        self.ensure_active_block()?;
+        
+        // Create a document entry
+        let doc = DocumentEntry::new(id.to_vec(), data.to_vec());
+        
+        // Add the document to the active block
+        if let Some(block) = self.active_block.as_mut() {
+            block.add_document(doc)?;
+        }
+        
+        // Flush if needed
+        self.flush_if_needed()?;
         
         Ok(())
     }
     
     /// Read a document from a block
     pub fn read_document(&self, block_index: u32, offset: usize) -> Result<Vec<u8>> {
-        let path = self.data_file_path(block_index);
+        let path = &self.base_file_path;
         
         // Open the file
-        let mut file = File::open(&path).map_err(|e| Error::IoError(e))?;
+        let mut file = File::open(path)
+            .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?;
         
-        // Read the header to get necessary info
-        let mut magic = [0u8; 4];
-        file.read_exact(&mut magic).map_err(|e| Error::IoError(e))?;
+        // Calculate position in the file
+        let block = Block::new(self.config.compression);
+        let block_size = block.size() as u64;
+        let position = block_index as u64 * block_size;
         
-        if magic != BlockHeader::MAGIC {
-            return Err(Error::Other("Invalid block file format".to_string()));
-        }
+        // Seek to the block
+        file.seek(SeekFrom::Start(position))
+            .map_err(|e| Error::Other(format!("Failed to seek in file: {}", e)))?;
         
-        // Skip the rest of the header
-        file.seek(SeekFrom::Current((BlockHeader::SIZE - 4) as i64))
-            .map_err(|e| Error::IoError(e))?;
+        // Read the block header
+        let mut header_bytes = vec![0u8; crate::BlockHeader::SIZE];
+        file.read_exact(&mut header_bytes)
+            .map_err(|e| Error::Other(format!("Failed to read header: {}", e)))?;
         
-        // Seek to the document offset
-        file.seek(SeekFrom::Current(offset as i64))
-            .map_err(|e| Error::IoError(e))?;
+        // Seek to the document offset within the block
+        file.seek(SeekFrom::Start(position + crate::BlockHeader::SIZE as u64 + offset as u64))
+            .map_err(|e| Error::Other(format!("Failed to seek to document: {}", e)))?;
         
         // Read document ID length
         let mut id_len_bytes = [0u8; 2];
-        file.read_exact(&mut id_len_bytes).map_err(|e| Error::IoError(e))?;
+        file.read_exact(&mut id_len_bytes)
+            .map_err(|e| Error::Other(format!("Failed to read ID length: {}", e)))?;
         let id_len = u16::from_le_bytes(id_len_bytes) as usize;
         
         // Skip document ID
         file.seek(SeekFrom::Current(id_len as i64))
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| Error::Other(format!("Failed to seek past ID: {}", e)))?;
         
         // Read document data length
         let mut data_len_bytes = [0u8; 4];
-        file.read_exact(&mut data_len_bytes).map_err(|e| Error::IoError(e))?;
+        file.read_exact(&mut data_len_bytes)
+            .map_err(|e| Error::Other(format!("Failed to read data length: {}", e)))?;
         let data_len = u32::from_le_bytes(data_len_bytes) as usize;
         
         // Read document data
         let mut data = vec![0u8; data_len];
-        file.read_exact(&mut data).map_err(|e| Error::IoError(e))?;
+        file.read_exact(&mut data)
+            .map_err(|e| Error::Other(format!("Failed to read data: {}", e)))?;
         
         Ok(data)
-    }
-}
-
-impl Drop for BlockManager {
-    fn drop(&mut self) {
-        // Ensure any active block is flushed on drop
-        let _ = self.flush();
     }
 }

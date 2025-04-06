@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 nebuladb-core = { path = "../core" }
+nebuladb-wal = { path = "../wal" }
