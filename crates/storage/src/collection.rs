@@ -44,11 +44,9 @@ impl Collection {
     }
     
     /// Retrieve a document from the collection
-    pub fn get(&self, _id: &[u8]) -> Result<Option<Vec<u8>>> {
-        // This is just a stub - it will need to be implemented
-        // The implementation would likely use indexes to find the block
-        // containing the document with the given ID
-        Err(Error::Other("Not implemented".to_string()))
+    pub fn get(&self, id: &[u8]) -> Result<Option<Vec<u8>>> {
+        // Use the block manager to find the document
+        self.block_manager.find_document(id)
     }
     
     /// Delete a document from the collection
@@ -63,4 +61,4 @@ impl Collection {
     pub fn close(&mut self) -> Result<()> {
         self.block_manager.flush()
     }
-} 
+}

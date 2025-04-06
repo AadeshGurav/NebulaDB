@@ -1,7 +1,7 @@
 //! Block manager for NebulaDB storage
 
 use std::fs::{File, OpenOptions};
-use crate::{Block, StorageConfig, Result};
+use crate::{Block, BlockHeader, StorageConfig, Result};
 use std::io::{Write, Seek, SeekFrom, Read};
 use std::path::PathBuf;
 use crate::block::{BlockOperations, DocumentEntry};
@@ -234,5 +234,156 @@ impl BlockManager {
             .map_err(|e| Error::Other(format!("Failed to read data: {}", e)))?;
         
         Ok(data)
+    }
+    
+    /// Find a document by ID
+    pub fn find_document(&self, doc_id: &[u8]) -> Result<Option<Vec<u8>>> {
+        if !self.base_file_path.exists() {
+            return Ok(None);
+        }
+        
+        // First, check active block if it exists
+        if let Some(block) = &self.active_block {
+            // Search the active block for the document
+            let doc_data = self.search_block_for_document(block, doc_id)?;
+            if doc_data.is_some() {
+                return Ok(doc_data);
+            }
+        }
+        
+        // Open the file
+        let mut file = File::open(&self.base_file_path)
+            .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?;
+        
+        // Determine how many blocks are in the file
+        let file_size = file.metadata()
+            .map_err(|e| Error::Other(format!("Failed to get metadata: {}", e)))?.len();
+        
+        if file_size == 0 {
+            return Ok(None);
+        }
+        
+        // Read each block and search for the document
+        // Start from the newest blocks (higher likelihood of finding the document)
+        let mut block_idx = self.current_block_idx;
+        while block_idx > 0 {
+            block_idx -= 1;
+            
+            // Seek to the block
+            let mock_block = Block::new(self.config.compression);
+            let block_size = mock_block.size() as u64;
+            let position = block_idx as u64 * block_size;
+            
+            if position >= file_size {
+                continue;
+            }
+            
+            file.seek(SeekFrom::Start(position))
+                .map_err(|e| Error::Other(format!("Failed to seek in file: {}", e)))?;
+            
+            // Read the entire block
+            let mut block_data = vec![0u8; block_size as usize];
+            
+            // Use read instead of read_exact to handle end of file gracefully
+            let bytes_read = file.read(&mut block_data)
+                .map_err(|e| Error::Other(format!("Failed to read block: {}", e)))?;
+            
+            if bytes_read < BlockHeader::SIZE {
+                continue;
+            }
+            
+            // Parse the block
+            let block = match Block::from_bytes(&block_data[0..bytes_read]) {
+                Ok(b) => b,
+                Err(_) => continue, // Skip invalid blocks
+            };
+            
+            // Search this block for the document
+            let doc_data = self.search_block_for_document(&block, doc_id)?;
+            if doc_data.is_some() {
+                return Ok(doc_data);
+            }
+        }
+        
+        // Document not found
+        Ok(None)
+    }
+    
+    /// Search a block for a document with the given ID
+    fn search_block_for_document(&self, block: &Block, doc_id: &[u8]) -> Result<Option<Vec<u8>>> {
+        // If the block is empty, return None
+        if block.data.is_empty() {
+            return Ok(None);
+        }
+        
+        let mut offset = 0;
+        
+        // Iterate through document entries in the block
+        while offset < block.data.len() {
+            // Check if we have enough data for an ID length
+            if offset + 2 > block.data.len() {
+                break;
+            }
+            
+            // Read ID length
+            let id_len = u16::from_le_bytes([
+                block.data[offset],
+                block.data[offset + 1],
+            ]) as usize;
+            
+            // Check if we have enough data for the ID
+            if offset + 2 + id_len > block.data.len() {
+                break;
+            }
+            
+            // Read ID
+            let entry_id = &block.data[offset + 2..offset + 2 + id_len];
+            
+            // Check if this is the document we're looking for
+            if entry_id == doc_id {
+                // Found the document, read its data
+                let data_len_offset = offset + 2 + id_len;
+                
+                // Check if we have enough data for a data length
+                if data_len_offset + 4 > block.data.len() {
+                    break;
+                }
+                
+                // Read data length
+                let data_len = u32::from_le_bytes([
+                    block.data[data_len_offset],
+                    block.data[data_len_offset + 1],
+                    block.data[data_len_offset + 2],
+                    block.data[data_len_offset + 3],
+                ]) as usize;
+                
+                // Check if we have enough data for the document
+                if data_len_offset + 4 + data_len > block.data.len() {
+                    break;
+                }
+                
+                // Read document data
+                let data = block.data[data_len_offset + 4..data_len_offset + 4 + data_len].to_vec();
+                
+                return Ok(Some(data));
+            }
+            
+            // Move to the next document entry
+            if offset + 2 + id_len + 4 > block.data.len() {
+                break;
+            }
+            
+            let data_len = u32::from_le_bytes([
+                block.data[offset + 2 + id_len],
+                block.data[offset + 2 + id_len + 1],
+                block.data[offset + 2 + id_len + 2],
+                block.data[offset + 2 + id_len + 3],
+            ]) as usize;
+            
+            offset += 2 + id_len + 4 + data_len;
+        }
+        
+        // Document not found in this block
+        Ok(None)
     }
 }
