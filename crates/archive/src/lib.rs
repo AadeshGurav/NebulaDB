@@ -8,19 +8,22 @@ use nebuladb_core::{Error, Result};
 /// Archive configuration
 #[derive(Debug, Clone)]
 pub struct ArchiveConfig {
-    /// Archive threshold in days
-    pub archive_threshold_days: u64,
-    /// Archive directory
-    pub archive_dir: String,
+    pub compression_level: u8,
+    pub max_size_mb: u32,
 }
 
 impl Default for ArchiveConfig {
     fn default() -> Self {
         Self {
-            archive_threshold_days: 90,
-            archive_dir: String::from("/tmp/nebuladb/archive"),
+            compression_level: 6,
+            max_size_mb: 1024, // 1GB
         }
     }
+}
+
+/// Archive module initialization function (placeholder)
+pub fn init() -> &'static str {
+    "Archive module initialized (not implemented yet)"
 }
 
 /// A placeholder for archive functionality

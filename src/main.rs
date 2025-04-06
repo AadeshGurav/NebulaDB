@@ -5,8 +5,8 @@ use nebuladb_storage::{
     CompressionType
 };
 use std::path::Path;
-use std::io::{self};
 use std::collections::HashMap;
+use std::fs;
 use rustyline::{Editor, error::ReadlineError};
 use serde_json::Value as JsonValue;
 
@@ -212,7 +212,7 @@ fn main() -> Result<()> {
                             println!("No collections are currently open");
                         } else {
                             println!("Open collections:");
-                            for name in storage.collections.keys() {
+                            for name in storage.list_collections() {
                                 println!("  - {}", name);
                             }
                         }

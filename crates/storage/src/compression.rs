@@ -1,7 +1,7 @@
 //! Compression utilities for NebulaDB storage
 
 use crate::CompressionType;
-use nebuladb_core::{Error, Result};
+use nebuladb_core::Result;
 
 /// Compress data using the specified algorithm
 pub fn compress(data: &[u8], compression_type: CompressionType) -> Result<Vec<u8>> {

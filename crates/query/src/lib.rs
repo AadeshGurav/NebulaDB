@@ -1,26 +1,22 @@
-//! Query module for NebulaDB
-//!
-//! This module will handle query parsing, planning, and execution.
-//! For now, it's just a placeholder.
+//! Query engine for NebulaDB
 
-use nebuladb_core::{Error, Result};
-
-/// Query configuration
+/// Query engine configuration
 #[derive(Debug, Clone)]
 pub struct QueryConfig {
-    /// Maximum query execution time in seconds
-    pub max_execution_time: u64,
+    pub max_results: usize,
+    pub timeout_ms: u64,
 }
 
 impl Default for QueryConfig {
     fn default() -> Self {
         Self {
-            max_execution_time: 30,
+            max_results: 1000,
+            timeout_ms: 30000, // 30 seconds
         }
     }
 }
 
-/// A placeholder for query functionality
-pub fn placeholder() -> &'static str {
-    "Query module is not yet implemented"
+/// Query module initialization function (placeholder)
+pub fn init() -> &'static str {
+    "Query module initialized (not implemented yet)"
 }
