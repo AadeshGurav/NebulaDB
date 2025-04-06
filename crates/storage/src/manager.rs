@@ -11,6 +11,7 @@ use nebuladb_core::Error;
 pub const MAX_BLOCK_SIZE: usize = 4;
 
 /// Block manager for a collection
+#[derive(Debug)]
 pub struct BlockManager {
     /// Name of the collection
     name: String,

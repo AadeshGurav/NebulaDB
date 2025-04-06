@@ -1,12 +1,12 @@
 //! Collection management for NebulaDB storage
 
 use std::path::{Path, PathBuf};
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write, Seek, SeekFrom};
+use std::fs;
 
 use nebuladb_core::{Result, Error};
 
-use crate::{Block, BlockManager, Storage, StorageConfig, MAX_BLOCK_SIZE};
+use crate::StorageConfig;
+use crate::manager::BlockManager;
 
 /// A collection in NebulaDB storage
 #[derive(Debug)]
@@ -26,7 +26,7 @@ impl Collection {
         
         // Create directory if it doesn't exist
         if !path.exists() {
-            fs::create_dir_all(&path)?;
+            fs::create_dir_all(&path).map_err(|e| Error::IoError(e))?;
         }
         
         let block_manager = BlockManager::new(name, path.clone(), config.clone());
@@ -44,7 +44,7 @@ impl Collection {
     }
     
     /// Retrieve a document from the collection
-    pub fn get(&self, id: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&self, _id: &[u8]) -> Result<Option<Vec<u8>>> {
         // This is just a stub - it will need to be implemented
         // The implementation would likely use indexes to find the block
         // containing the document with the given ID
@@ -52,7 +52,7 @@ impl Collection {
     }
     
     /// Delete a document from the collection
-    pub fn delete(&mut self, id: &[u8]) -> Result<bool> {
+    pub fn delete(&mut self, _id: &[u8]) -> Result<bool> {
         // This is just a stub - it will need to be implemented
         // The implementation would likely mark the document as deleted
         // in its block and update indexes accordingly

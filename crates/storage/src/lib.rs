@@ -8,6 +8,7 @@ pub mod manager;
 pub mod compression;
 pub mod file;
 pub mod wal_integration;
+pub mod collection;
 
 use nebuladb_core::{Result, Config};
 

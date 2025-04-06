@@ -11,3 +11,17 @@ members = [
 #    "crates/cli",
 ]
 resolver = "2"
+
+[package]
+name = "nebuladb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nebuladb-core = { path = "crates/core" }
+nebuladb-storage = { path = "crates/storage" }
+nebuladb-index = { path = "crates/index" }
+nebuladb-query = { path = "crates/query" }
+nebuladb-wal = { path = "crates/wal" }
+nebuladb-graph = { path = "crates/graph" }
+nebuladb-archive = { path = "crates/archive" }
