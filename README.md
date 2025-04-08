@@ -19,18 +19,34 @@
 
 ## 📦 Architecture (Work in Progress)
 
-- `core/` – Shared types, serialization, config
-- `storage/` – Block engine, I/O layout, compression
-- `index/` – ID + (soon) secondary indexing
-- `wal/` – Write-ahead log system
-- `query/` – Execution engine + parser (planned)
-- `cli/` – REPL + JSON query interface
-- `apps/server/` – Optional HTTP server / gRPC API
+```text
+core/        → Shared types, serialization, config
+storage/     → Block engine, I/O layout, compression
+index/       → ID + (soon) secondary indexing
+wal/         → Write-ahead log system
+query/       → Execution engine + parser (planned)
+cli/         → REPL + JSON query interface
+apps/server/ → Optional HTTP server / gRPC API
+```
+
+
+## 🚀 Quick Start
+```sh
+git clone https://github.com/AadeshGurav/NebulaDB.git
+cd NebulaDB
+cargo build
+cargo run
+```
 
 ---
 
 ## 📜 License
+Business Source License 1.1 (BSL)
+Free for individuals, education, and open-source R&D.
+Commercial licenses available via `Aadesh Gurav`.
 
-Business Source License 1.1 (BSL).  
-Free for individuals, education, and open-source R&D.  
-Commercial licenses available via `SSK Innovations`.
+
+## 📘 Docs
+- Contribution Guide
+- Roadmap
+- Dev Help
