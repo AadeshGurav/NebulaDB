@@ -9,7 +9,7 @@ use crate::StorageConfig;
 use crate::manager::BlockManager;
 
 /// A collection in NebulaDB storage
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Collection {
     /// Name of the collection
     pub name: String,
