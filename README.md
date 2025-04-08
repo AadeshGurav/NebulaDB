@@ -47,6 +47,6 @@ Commercial licenses available via `Aadesh Gurav`.
 
 
 ## 📘 Docs
-- Contribution Guide
-- Roadmap
-- Dev Help
+- [Contribution Guide](docs/CONTIRBUTION.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Dev Help](docs/DEVELOPER_HELP.md)
