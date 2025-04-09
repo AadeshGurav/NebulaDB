@@ -5,7 +5,8 @@ use crate::database::Database;
 use crate::util::{is_valid_json, format_output, matches_query};
 use serde_json::Value as JsonValue;
 use crate::interfaces::InterfaceManagerRef;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
+use std::io::Write;
 
 #[derive(Clone)]
 /// CLI interface for interacting with the database
@@ -42,7 +43,7 @@ impl CliInterface {
         println!("Type 'help' for a list of commands");
         
         // Print the active database
-        if let Ok(manager) = self.manager.lock() {
+        if let Ok(manager) = self.manager.read() {
             if let Some(db_name) = manager.get_active_database_name() {
                 println!("Current database: {}", db_name);
             }
@@ -50,7 +51,7 @@ impl CliInterface {
         
         loop {
             // Update the prompt to show the active database
-            let prompt = if let Ok(manager) = self.manager.lock() {
+            let prompt = if let Ok(manager) = self.manager.read() {
                 match manager.get_active_database_name() {
                     Some(name) => format!("nebuladb:{}> ", name),
                     None => "nebuladb> ".to_string(),
@@ -97,7 +98,7 @@ impl CliInterface {
                         "find" => self.find_documents(&parts),
                         
                         // System commands
-                        "clear" => print!("\x1B[2J\x1B[1;1H"),  // ANSI escape code to clear screen and move cursor to top
+                        "clear" => self.clear_screen(),
                         "exit" | "quit" => {
                             println!("Exiting NebulaDB. Goodbye!");
                             break;
@@ -165,7 +166,7 @@ impl CliInterface {
         
         let name = parts[1];
         
-        if let Ok(mut manager) = self.manager.lock() {
+        if let Ok(mut manager) = self.manager.write() {
             match manager.create_database(name) {
                 Ok(_) => println!("Database '{}' created successfully", name),
                 Err(e) => println!("Error creating database '{}': {:?}", name, e),
@@ -184,7 +185,7 @@ impl CliInterface {
         
         let name = parts[1];
         
-        if let Ok(mut manager) = self.manager.lock() {
+        if let Ok(mut manager) = self.manager.write() {
             match manager.set_active_database(name) {
                 Ok(_) => println!("Switched to database '{}'", name),
                 Err(e) => println!("Error switching to database '{}': {:?}", name, e),
@@ -196,7 +197,7 @@ impl CliInterface {
     
     /// List all databases
     fn list_databases(&self) {
-        if let Ok(manager) = self.manager.lock() {
+        if let Ok(manager) = self.manager.read() {
             let databases = manager.list_databases();
             let active_db = manager.get_active_database_name();
             
@@ -242,7 +243,7 @@ impl CliInterface {
             return;
         }
         
-        if let Ok(mut manager) = self.manager.lock() {
+        if let Ok(mut manager) = self.manager.write() {
             match manager.drop_database(name) {
                 Ok(_) => println!("Database '{}' deleted successfully", name),
                 Err(e) => println!("Error deleting database '{}': {:?}", name, e),
@@ -253,8 +254,8 @@ impl CliInterface {
     }
     
     /// Get a reference to the active database
-    fn get_active_db(&self) -> Result<Arc<Mutex<Database>>> {
-        let manager = self.manager.lock()
+    fn get_active_db(&self) -> Result<Arc<RwLock<Database>>> {
+        let manager = self.manager.read()
             .map_err(|_| Error::Other("Failed to lock interface manager".into()))?;
         manager.get_active_database()
     }
@@ -262,8 +263,8 @@ impl CliInterface {
     /// List all collections
     fn list_collections(&self) {
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let db = db_mutex.lock().unwrap();
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
                 let all_collections = db.list_collections();
                 let open_collections = db.list_open_collections();
                 
@@ -300,8 +301,8 @@ impl CliInterface {
         let name = parts[1];
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let mut db = db_mutex.lock().unwrap();
+            Ok(db_rwlock) => {
+                let mut db = db_rwlock.write().unwrap();
                 let open_collections = db.list_open_collections();
                 
                 if open_collections.contains(&name.to_string()) {
@@ -328,8 +329,8 @@ impl CliInterface {
         let name = parts[1];
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let mut db = db_mutex.lock().unwrap();
+            Ok(db_rwlock) => {
+                let mut db = db_rwlock.write().unwrap();
                 match db.close_collection(name) {
                     Ok(_) => println!("Collection '{}' closed successfully", name),
                     Err(e) => println!("Error closing collection '{}': {:?}", name, e),
@@ -349,8 +350,8 @@ impl CliInterface {
         let name = parts[1];
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let db = db_mutex.lock().unwrap();
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
                 
                 // Check if collection already exists
                 if db.collection_exists(name) {
@@ -358,6 +359,10 @@ impl CliInterface {
                     return;
                 }
                 
+                // We need a write lock to create the collection
+                drop(db);
+                
+                let mut db = db_rwlock.write().unwrap();
                 match db.create_collection(name) {
                     Ok(_) => println!("Collection '{}' created successfully", name),
                     Err(e) => println!("Error creating collection '{}': {:?}", name, e),
@@ -379,12 +384,17 @@ impl CliInterface {
         let data = parts[3..].join(" ").as_bytes().to_vec();
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let mut db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection_mut(collection_name) {
-                    match collection.insert(id, &data) {
-                        Ok(_) => println!("Document inserted successfully"),
-                        Err(e) => println!("Error inserting document: {:?}", e),
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(mut collection) = collection_mutex.lock() {
+                        match collection.insert(id, &data) {
+                            Ok(_) => println!("Document inserted successfully"),
+                            Err(e) => println!("Error inserting document: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -415,12 +425,17 @@ impl CliInterface {
         }
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let mut db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection_mut(collection_name) {
-                    match collection.insert(id, json_str.as_bytes()) {
-                        Ok(_) => println!("JSON document inserted successfully"),
-                        Err(e) => println!("Error inserting document: {:?}", e),
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(mut collection) = collection_mutex.lock() {
+                        match collection.insert(id, json_str.as_bytes()) {
+                            Ok(_) => println!("JSON document inserted successfully"),
+                            Err(e) => println!("Error inserting document: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -441,16 +456,21 @@ impl CliInterface {
         let id = parts[2].as_bytes();
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection(collection_name) {
-                    match collection.get(id) {
-                        Ok(Some(data)) => {
-                            let data_str = String::from_utf8_lossy(&data);
-                            format_output(&data_str);
-                        },
-                        Ok(None) => println!("Document not found"),
-                        Err(e) => println!("Error retrieving document: {:?}", e),
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(collection) = collection_mutex.lock() {
+                        match collection.get(id) {
+                            Ok(Some(data)) => {
+                                let data_str = String::from_utf8_lossy(&data);
+                                format_output(&data_str);
+                            },
+                            Ok(None) => println!("Document not found"),
+                            Err(e) => println!("Error retrieving document: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -471,13 +491,18 @@ impl CliInterface {
         let id = parts[2].as_bytes();
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let mut db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection_mut(collection_name) {
-                    match collection.delete(id) {
-                        Ok(true) => println!("Document deleted successfully"),
-                        Ok(false) => println!("Document not found"),
-                        Err(e) => println!("Error deleting document: {:?}", e),
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(mut collection) = collection_mutex.lock() {
+                        match collection.delete(id) {
+                            Ok(true) => println!("Document deleted successfully"),
+                            Ok(false) => println!("Document not found"),
+                            Err(e) => println!("Error deleting document: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -497,22 +522,27 @@ impl CliInterface {
         let collection_name = parts[1];
         
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection(collection_name) {
-                    match collection.scan() {
-                        Ok(ids) => {
-                            if ids.is_empty() {
-                                println!("No documents found in collection '{}'", collection_name);
-                            } else {
-                                println!("Documents in collection '{}':", collection_name);
-                                for id in &ids {
-                                    println!("  - {}", String::from_utf8_lossy(id));
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(collection) = collection_mutex.lock() {
+                        match collection.scan() {
+                            Ok(ids) => {
+                                if ids.is_empty() {
+                                    println!("No documents found in collection '{}'", collection_name);
+                                } else {
+                                    println!("Documents in collection '{}':", collection_name);
+                                    for id in &ids {
+                                        println!("  - {}", String::from_utf8_lossy(id));
+                                    }
+                                    println!("Total: {} documents", ids.len());
                                 }
-                                println!("Total: {} documents", ids.len());
-                            }
-                        },
-                        Err(e) => println!("Error scanning collection: {:?}", e),
+                            },
+                            Err(e) => println!("Error scanning collection: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -521,7 +551,7 @@ impl CliInterface {
             Err(e) => println!("Error: {:?}", e),
         }
     }
-    
+
     /// Find documents in a collection
     fn find_documents(&self, parts: &[&str]) {
         if parts.len() < 2 {
@@ -541,6 +571,8 @@ impl CliInterface {
             "{}".to_string() // Empty query matches all documents
         };
         
+        println!("DEBUG: Using query string: '{}'", query_str);
+        
         // Validate JSON
         let query = match serde_json::from_str::<JsonValue>(&query_str) {
             Ok(q) => q,
@@ -550,44 +582,59 @@ impl CliInterface {
             }
         };
         
+        println!("DEBUG: Parsed query: {:?}", query);
+        
         match self.get_active_db() {
-            Ok(db_mutex) => {
-                let db = db_mutex.lock().unwrap();
-                if let Some(collection) = db.get_collection(collection_name) {
-                    // Get all document IDs
-                    match collection.scan() {
-                        Ok(ids) => {
-                            if ids.is_empty() {
-                                println!("No documents found in collection '{}'", collection_name);
-                                return;
-                            }
-                            
-                            let mut found_count = 0;
-                            
-                            // For each ID, get the document and check if it matches the query
-                            for id in &ids {
-                                match collection.get(id) {
-                                    Ok(Some(data)) => {
-                                        let doc_str = String::from_utf8_lossy(&data);
-                                        
-                                        if matches_query(&doc_str, &query) {
-                                            found_count += 1;
-                                            println!("ID: {}", String::from_utf8_lossy(id));
-                                            format_output(&doc_str);
-                                            println!("---");
-                                        }
-                                    },
-                                    _ => continue,
+            Ok(db_rwlock) => {
+                let db = db_rwlock.read().unwrap();
+                if let Some(collection_mutex) = db.get_collection(collection_name) {
+                    // Lock the collection to access it
+                    if let Ok(collection) = collection_mutex.lock() {
+                        // Get all document IDs
+                        match collection.scan() {
+                            Ok(ids) => {
+                                if ids.is_empty() {
+                                    println!("No documents found in collection '{}'", collection_name);
+                                    return;
                                 }
-                            }
-                            
-                            if found_count == 0 {
-                                println!("No documents matched the query");
-                            } else {
-                                println!("Found {} matching document(s)", found_count);
-                            }
-                        },
-                        Err(e) => println!("Error scanning collection: {:?}", e),
+                                
+                                println!("DEBUG: Found {} document IDs", ids.len());
+                                
+                                let mut found_count = 0;
+                                
+                                // For each ID, get the document and check if it matches the query
+                                for id in &ids {
+                                    println!("DEBUG: Checking document with ID: {}", String::from_utf8_lossy(id));
+                                    match collection.get(&id) {
+                                        Ok(Some(data)) => {
+                                            let doc_str = String::from_utf8_lossy(&data);
+                                            println!("DEBUG: Document content: {}", doc_str);
+                                            
+                                            if matches_query(&doc_str, &query) {
+                                                println!("DEBUG: Document matches query!");
+                                                found_count += 1;
+                                                println!("ID: {}", String::from_utf8_lossy(id));
+                                                format_output(&doc_str);
+                                                println!("---");
+                                            } else {
+                                                println!("DEBUG: Document does NOT match query");
+                                            }
+                                        },
+                                        Ok(None) => println!("DEBUG: Document with ID {} not found", String::from_utf8_lossy(id)),
+                                        Err(e) => println!("DEBUG: Error retrieving document: {:?}", e),
+                                    }
+                                }
+                                
+                                if found_count == 0 {
+                                    println!("No documents matched the query");
+                                } else {
+                                    println!("Found {} matching document(s)", found_count);
+                                }
+                            },
+                            Err(e) => println!("Error scanning collection: {:?}", e),
+                        }
+                    } else {
+                        println!("Failed to lock collection");
                     }
                 } else {
                     println!("Collection '{}' is not open", collection_name);
@@ -596,4 +643,32 @@ impl CliInterface {
             Err(e) => println!("Error: {:?}", e),
         }
     }
-} 
+
+    /// Clear the terminal screen
+    fn clear_screen(&self) {
+        if cfg!(target_os = "windows") {
+            // For Windows
+            if std::process::Command::new("cmd")
+                .args(["/C", "cls"])
+                .status()
+                .is_err()
+            {
+                // Fallback to ANSI escape codes
+                print!("\x1B[2J\x1B[1;1H");
+            }
+        } else {
+            // For Unix-like systems
+            if std::process::Command::new("clear")
+                .status()
+                .is_err()
+            {
+                // Fallback to ANSI escape codes
+                print!("\x1B[2J\x1B[1;1H");
+            }
+        }
+        // Ensure output is flushed
+        if let Err(e) = std::io::stdout().flush() {
+            eprintln!("Error flushing stdout: {}", e);
+        }
+    }
+}

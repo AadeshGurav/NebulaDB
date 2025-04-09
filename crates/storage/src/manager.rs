@@ -391,66 +391,135 @@ impl BlockManager {
     pub fn scan_document_ids(&self) -> Result<Vec<Vec<u8>>> {
         let mut document_ids = Vec::new();
         
+        println!("DEBUG: Scanning for document IDs in collection: {}", self.base_file_path.display());
+        
         // First scan the active block if it exists
         if let Some(block) = &self.active_block {
+            println!("DEBUG: Scanning active block with {} bytes of data", block.data.len());
             let ids = self.scan_block_for_document_ids(block)?;
+            println!("DEBUG: Found {} document IDs in active block", ids.len());
             document_ids.extend(ids);
+        } else {
+            println!("DEBUG: No active block exists");
         }
         
         // If no block file exists, return the results from the active block
         if !self.base_file_path.exists() {
+            println!("DEBUG: No blocks file exists at {}", self.base_file_path.display());
             return Ok(document_ids);
         }
         
-        // Open the file
-        let mut file = File::open(&self.base_file_path)
-            .map_err(|e| Error::Other(format!("Failed to open file: {}", e)))?;
+        // Read the entire file into memory for direct inspection
+        println!("DEBUG: Reading blocks file for direct inspection");
+        let file_content = std::fs::read(&self.base_file_path)
+            .map_err(|e| Error::Other(format!("Failed to read blocks file: {}", e)))?;
+            
+        println!("DEBUG: Blocks file size: {} bytes", file_content.len());
         
-        // Determine how many blocks are in the file
-        let file_size = file.metadata()
-            .map_err(|e| Error::Other(format!("Failed to get metadata: {}", e)))?.len();
-        
-        if file_size == 0 {
+        if file_content.is_empty() {
+            println!("DEBUG: Blocks file is empty");
             return Ok(document_ids);
         }
         
-        // Read each block and scan for document IDs
-        for block_idx in 0..self.current_block_idx {
-            // Seek to the block
-            let mock_block = Block::new(self.config.compression);
-            let block_size = mock_block.size() as u64;
-            let position = block_idx as u64 * block_size;
-            
-            if position >= file_size {
-                continue;
+        // Look for the magic number 'NBLD' that marks the beginning of a block
+        let magic = [b'N', b'B', b'L', b'D'];
+        println!("DEBUG: Searching for magic number: {:?}", magic);
+        
+        let mut position = 0;
+        while position < file_content.len() - 4 {
+            if &file_content[position..position+4] == &magic {
+                println!("DEBUG: Found block at position {}", position);
+                
+                // Extract document IDs from this block
+                self.extract_ids_from_raw_block(&file_content[position..], &mut document_ids)?;
+                
+                // Move to the next position
+                position += 4;
+            } else {
+                position += 1;
             }
-            
-            file.seek(SeekFrom::Start(position))
-                .map_err(|e| Error::Other(format!("Failed to seek in file: {}", e)))?;
-            
-            // Read the entire block
-            let mut block_data = vec![0u8; block_size as usize];
-            
-            // Use read instead of read_exact to handle end of file gracefully
-            let bytes_read = file.read(&mut block_data)
-                .map_err(|e| Error::Other(format!("Failed to read block: {}", e)))?;
-            
-            if bytes_read < BlockHeader::SIZE {
-                continue;
-            }
-            
-            // Parse the block
-            let block = match Block::from_bytes(&block_data[0..bytes_read]) {
-                Ok(b) => b,
-                Err(_) => continue, // Skip invalid blocks
-            };
-            
-            // Scan this block for document IDs
-            let ids = self.scan_block_for_document_ids(&block)?;
-            document_ids.extend(ids);
+        }
+        
+        println!("DEBUG: Total document IDs found: {}", document_ids.len());
+        for id in &document_ids {
+            println!("DEBUG: Document ID: {}", String::from_utf8_lossy(id));
         }
         
         Ok(document_ids)
+    }
+    
+    /// Extract document IDs from a raw block buffer starting with a magic number
+    fn extract_ids_from_raw_block(&self, block_data: &[u8], document_ids: &mut Vec<Vec<u8>>) -> Result<()> {
+        if block_data.len() < BlockHeader::SIZE {
+            println!("DEBUG: Block data too small for header");
+            return Ok(());
+        }
+        
+        // Skip the header and look for document entries
+        let mut offset = BlockHeader::SIZE;
+        
+        // Iterate through document entries in the block
+        while offset < block_data.len() - 6 {  // Minimum size for an entry (2 for ID length, 4 for data length)
+            // Read ID length
+            if offset + 2 > block_data.len() {
+                break;
+            }
+            
+            let id_len = u16::from_le_bytes([
+                block_data[offset],
+                block_data[offset + 1],
+            ]) as usize;
+            
+            println!("DEBUG: ID length at offset {}: {}", offset, id_len);
+            
+            // Skip invalid ID lengths
+            if id_len == 0 || offset + 2 + id_len > block_data.len() {
+                offset += 1;
+                continue;
+            }
+            
+            // Read ID
+            let entry_id = block_data[offset + 2..offset + 2 + id_len].to_vec();
+            
+            // Validate that this looks like a document ID
+            let id_str = String::from_utf8_lossy(&entry_id);
+            println!("DEBUG: Found ID candidate: {} at offset {}", id_str, offset);
+            
+            // Add to our list if it's not a tombstone ID (doesn't start and end with underscore)
+            if !entry_id.is_empty() && !(entry_id.starts_with(b"_") && entry_id.ends_with(b"_")) {
+                // Check if the ID contains valid characters
+                let is_valid = entry_id.iter().all(|&b| 
+                    b.is_ascii_alphanumeric() || b.is_ascii_punctuation() || b.is_ascii_whitespace());
+                
+                if is_valid {
+                    println!("DEBUG: Adding valid document ID: {}", id_str);
+                    document_ids.push(entry_id);
+                    
+                    // Move past this entry
+                    if offset + 2 + id_len + 4 <= block_data.len() {
+                        let data_len = u32::from_le_bytes([
+                            block_data[offset + 2 + id_len],
+                            block_data[offset + 2 + id_len + 1],
+                            block_data[offset + 2 + id_len + 2],
+                            block_data[offset + 2 + id_len + 3],
+                        ]) as usize;
+                        
+                        offset += 2 + id_len + 4 + data_len;
+                    } else {
+                        // Can't read data length, move forward
+                        offset += 2 + id_len;
+                    }
+                } else {
+                    // Not a valid ID, move forward one byte
+                    offset += 1;
+                }
+            } else {
+                // Move forward one byte
+                offset += 1;
+            }
+        }
+        
+        Ok(())
     }
 
     /// Scan a block for all document IDs
@@ -459,8 +528,11 @@ impl BlockManager {
         
         // If the block is empty, return empty list
         if block.data.is_empty() {
+            println!("DEBUG: Block data is empty");
             return Ok(document_ids);
         }
+        
+        println!("DEBUG: Scanning block with {} bytes of data", block.data.len());
         
         let mut offset = 0;
         
@@ -468,6 +540,7 @@ impl BlockManager {
         while offset < block.data.len() {
             // Check if we have enough data for an ID length
             if offset + 2 > block.data.len() {
+                println!("DEBUG: Not enough data for ID length at offset {}", offset);
                 break;
             }
             
@@ -477,21 +550,30 @@ impl BlockManager {
                 block.data[offset + 1],
             ]) as usize;
             
+            println!("DEBUG: ID length at offset {}: {}", offset, id_len);
+            
             // Check if we have enough data for the ID
             if offset + 2 + id_len > block.data.len() {
+                println!("DEBUG: Not enough data for ID at offset {}", offset);
                 break;
             }
             
             // Read ID
             let entry_id = block.data[offset + 2..offset + 2 + id_len].to_vec();
+            let id_str = String::from_utf8_lossy(&entry_id);
+            println!("DEBUG: Found ID: {} at offset {}", id_str, offset);
             
             // Add to our list if it's not a tombstone ID (doesn't start and end with underscore)
             if !(entry_id.starts_with(b"_") && entry_id.ends_with(b"_")) {
+                println!("DEBUG: Adding regular document ID: {}", id_str);
                 document_ids.push(entry_id);
+            } else {
+                println!("DEBUG: Skipping tombstone ID: {}", id_str);
             }
             
             // Move to the next document entry
             if offset + 2 + id_len + 4 > block.data.len() {
+                println!("DEBUG: Not enough data for data length at offset {}", offset);
                 break;
             }
             
@@ -502,8 +584,13 @@ impl BlockManager {
                 block.data[offset + 2 + id_len + 3],
             ]) as usize;
             
+            println!("DEBUG: Data length: {} at offset {}", data_len, offset + 2 + id_len);
+            
             offset += 2 + id_len + 4 + data_len;
+            println!("DEBUG: New offset: {}", offset);
         }
+        
+        println!("DEBUG: Found {} document IDs in block", document_ids.len());
         
         Ok(document_ids)
     }

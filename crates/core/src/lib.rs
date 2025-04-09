@@ -1,4 +1,5 @@
 //! Core functionality for NebulaDB
+use serde::{Serialize, Deserialize};
 
 /// Represents a database error
 #[derive(Debug)]
@@ -10,7 +11,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Core configuration for the database
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub data_dir: String,
     pub max_size: usize,

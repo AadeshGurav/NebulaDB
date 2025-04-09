@@ -3,7 +3,7 @@ pub mod http;
 pub mod grpc;
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashMap;
 use nebuladb_core::{Result, Error};
 use nebuladb_storage::StorageConfig;
@@ -17,19 +17,24 @@ pub struct InterfaceManager {
     /// Storage configuration
     config: StorageConfig,
     /// Collection of databases (name -> database instance)
-    databases: HashMap<String, Arc<Mutex<Database>>>,
+    databases: HashMap<String, Arc<RwLock<Database>>>,
     /// Currently active database name
     active_database: Option<String>,
     /// CLI interface (if enabled)
     cli: Option<Arc<Mutex<cli::CliInterface>>>,
     /// HTTP interface (if enabled)
-    http: Option<http::HttpInterface>,
+    http: Option<Arc<http::HttpInterface>>,
     /// gRPC interface (if enabled)
-    grpc: Option<grpc::GrpcInterface>,
+    grpc: Option<Arc<grpc::GrpcInterface>>,
+    /// Maximum number of concurrent connections per interface
+    max_connections: usize,
+    /// Connection timeout in seconds
+    connection_timeout: u64,
 }
 
 // Helper type to avoid recursive type issues
-pub type InterfaceManagerRef = Arc<Mutex<InterfaceManager>>;
+// Using RwLock instead of Mutex for better concurrency (multiple readers, single writer)
+pub type InterfaceManagerRef = Arc<RwLock<InterfaceManager>>;
 
 impl InterfaceManager {
     /// Create a new interface manager
@@ -42,6 +47,8 @@ impl InterfaceManager {
             cli: None,
             http: None,
             grpc: None,
+            max_connections: 1000, // Default value
+            connection_timeout: 30, // Default value in seconds
         };
         
         // Look for existing databases
@@ -53,7 +60,7 @@ impl InterfaceManager {
                             // Skip hidden directories
                             if !name.starts_with('.') {
                                 if let Ok(db) = Database::new(name, base_path, &manager.config) {
-                                    manager.databases.insert(name.to_string(), Arc::new(Mutex::new(db)));
+                                    manager.databases.insert(name.to_string(), Arc::new(RwLock::new(db)));
                                 }
                             }
                         }
@@ -83,7 +90,7 @@ impl InterfaceManager {
     }
     
     /// Get a reference to the active database
-    pub fn get_active_database(&self) -> Result<Arc<Mutex<Database>>> {
+    pub fn get_active_database(&self) -> Result<Arc<RwLock<Database>>> {
         match &self.active_database {
             Some(name) => {
                 match self.databases.get(name) {
@@ -102,7 +109,7 @@ impl InterfaceManager {
         }
         
         let db = Database::new(name, &self.base_path, &self.config)?;
-        self.databases.insert(name.to_string(), Arc::new(Mutex::new(db)));
+        self.databases.insert(name.to_string(), Arc::new(RwLock::new(db)));
         
         // If this is the first database, make it active
         if self.active_database.is_none() {
@@ -132,10 +139,16 @@ impl InterfaceManager {
         Ok(())
     }
     
+    /// Configure connection limits
+    pub fn configure_connections(&mut self, max_connections: usize, timeout_seconds: u64) {
+        self.max_connections = max_connections;
+        self.connection_timeout = timeout_seconds;
+    }
+    
     /// Enable the CLI interface
     pub fn enable_cli(&mut self) -> Result<()> {
         // Create a shared reference to self
-        let manager_ref = Arc::new(Mutex::new(self.clone()));
+        let manager_ref = Arc::new(RwLock::new(self.clone()));
         
         // Create CLI interface with the shared reference
         let cli = cli::CliInterface::new(manager_ref)?;
@@ -148,13 +161,17 @@ impl InterfaceManager {
     
     /// Enable the HTTP interface
     pub fn enable_http(&mut self, port: u16) -> Result<()> {
-        self.http = Some(http::HttpInterface::new(self, port)?);
+        let manager_ref = Arc::new(RwLock::new(self.clone()));
+        let http = http::HttpInterface::new(manager_ref, port)?;
+        self.http = Some(Arc::new(http));
         Ok(())
     }
     
     /// Enable the gRPC interface
     pub fn enable_grpc(&mut self, port: u16) -> Result<()> {
-        self.grpc = Some(grpc::GrpcInterface::new(self, port)?);
+        let manager_ref = Arc::new(RwLock::new(self.clone()));
+        let grpc = grpc::GrpcInterface::new(manager_ref, port)?;
+        self.grpc = Some(Arc::new(grpc));
         Ok(())
     }
     
@@ -167,11 +184,23 @@ impl InterfaceManager {
         }
         
         if let Some(http) = &self.http {
-            http.start()?;
+            // Clone the Arc to allow for concurrent access across threads
+            let http_clone = Arc::clone(http);
+            std::thread::spawn(move || {
+                if let Err(e) = http_clone.start() {
+                    eprintln!("Error starting HTTP interface: {:?}", e);
+                }
+            });
         }
         
         if let Some(grpc) = &self.grpc {
-            grpc.start()?;
+            // Clone the Arc to allow for concurrent access across threads
+            let grpc_clone = Arc::clone(grpc);
+            std::thread::spawn(move || {
+                if let Err(e) = grpc_clone.start() {
+                    eprintln!("Error starting gRPC interface: {:?}", e);
+                }
+            });
         }
         
         Ok(())
@@ -190,9 +219,9 @@ impl InterfaceManager {
         }
         
         // Remove from memory
-        if let Some(db_mutex) = self.databases.remove(name) {
+        if let Some(db_rwlock) = self.databases.remove(name) {
             // Close all collections
-            if let Ok(mut db) = db_mutex.lock() {
+            if let Ok(mut db) = db_rwlock.write() {
                 db.close_all_collections()?;
             }
         }
@@ -210,8 +239,8 @@ impl InterfaceManager {
 impl Drop for InterfaceManager {
     fn drop(&mut self) {
         // Close all databases when the manager is dropped
-        for (name, db_mutex) in &self.databases {
-            if let Ok(mut db) = db_mutex.lock() {
+        for (name, db_rwlock) in &self.databases {
+            if let Ok(mut db) = db_rwlock.write() {
                 if let Err(e) = db.close_all_collections() {
                     eprintln!("Error closing collections in database '{}': {:?}", name, e);
                 }

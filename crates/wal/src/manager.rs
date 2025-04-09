@@ -55,7 +55,7 @@ pub struct WalManager {
 impl WalManager {
     /// Create a new WAL manager
     pub fn new(config: WalConfig) -> Result<Self> {
-        let wal_dir = Path::new(&config.base.data_dir).join("wal");
+        let wal_dir = Path::new(&config.dir_path).to_path_buf();
         
         // Create the WAL directory if it doesn't exist
         std::fs::create_dir_all(&wal_dir)

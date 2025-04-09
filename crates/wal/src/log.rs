@@ -3,7 +3,7 @@
 //! This module handles the low-level operations on WAL log files.
 
 use crate::entry::WalEntry;
-use nebuladb_core::{Error, Result};
+use crate::error::{WalError, Result};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -38,7 +38,7 @@ impl WalLog {
         // Create directory if it doesn't exist
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| Error::IoError(e))?;
+                .map_err(|e| WalError::Io(e))?;
         }
         
         // Open the file
@@ -48,23 +48,23 @@ impl WalLog {
             .create(true)
             .truncate(true)
             .open(&path)
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         // Write WAL header
         // Format: [magic(4)][version(1)][reserved(3)][timestamp(8)]
-        file.write_all(&WAL_MAGIC).map_err(|e| Error::IoError(e))?;
-        file.write_all(&[WAL_FORMAT_VERSION]).map_err(|e| Error::IoError(e))?;
-        file.write_all(&[0, 0, 0]).map_err(|e| Error::IoError(e))?; // Reserved
+        file.write_all(&WAL_MAGIC).map_err(|e| WalError::Io(e))?;
+        file.write_all(&[WAL_FORMAT_VERSION]).map_err(|e| WalError::Io(e))?;
+        file.write_all(&[0, 0, 0]).map_err(|e| WalError::Io(e))?; // Reserved
         
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         
-        file.write_all(&timestamp.to_le_bytes()).map_err(|e| Error::IoError(e))?;
+        file.write_all(&timestamp.to_le_bytes()).map_err(|e| WalError::Io(e))?;
         
         if sync_on_write {
-            file.sync_all().map_err(|e| Error::IoError(e))?;
+            file.sync_all().map_err(|e| WalError::Io(e))?;
         }
         
         Ok(Self {
@@ -85,31 +85,31 @@ impl WalLog {
             .write(true)
             .create(false)
             .open(&path)
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         // Read and verify WAL header
         let mut magic = [0u8; 4];
-        file.read_exact(&mut magic).map_err(|e| Error::IoError(e))?;
+        file.read_exact(&mut magic).map_err(|e| WalError::Io(e))?;
         
         if magic != WAL_MAGIC {
-            return Err(Error::Other("Invalid WAL file: wrong magic number".to_string()));
+            return Err(WalError::Other("Invalid WAL file: wrong magic number".to_string()));
         }
         
         let mut version = [0u8; 1];
-        file.read_exact(&mut version).map_err(|e| Error::IoError(e))?;
+        file.read_exact(&mut version).map_err(|e| WalError::Io(e))?;
         
         if version[0] != WAL_FORMAT_VERSION {
-            return Err(Error::Other(format!("Unsupported WAL format version: {}", version[0])));
+            return Err(WalError::Other(format!("Unsupported WAL format version: {}", version[0])));
         }
         
         // Skip reserved bytes
-        file.seek(SeekFrom::Current(3)).map_err(|e| Error::IoError(e))?;
+        file.seek(SeekFrom::Current(3)).map_err(|e| WalError::Io(e))?;
         
         // Skip timestamp
-        file.seek(SeekFrom::Current(8)).map_err(|e| Error::IoError(e))?;
+        file.seek(SeekFrom::Current(8)).map_err(|e| WalError::Io(e))?;
         
         // Get the current file size
-        let position = file.seek(SeekFrom::End(0)).map_err(|e| Error::IoError(e))?;
+        let position = file.seek(SeekFrom::End(0)).map_err(|e| WalError::Io(e))?;
         
         Ok(Self {
             path,
@@ -123,20 +123,20 @@ impl WalLog {
     pub fn append(&mut self, entry: &WalEntry) -> Result<u64> {
         // Seek to the end
         self.file.seek(SeekFrom::Start(self.position))
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         // Write the entry
         let entry_bytes = entry.to_bytes();
         let entry_pos = self.position;
         
-        self.file.write_all(&entry_bytes).map_err(|e| Error::IoError(e))?;
+        self.file.write_all(&entry_bytes).map_err(|e| WalError::Io(e))?;
         
         // Update position
         self.position += entry_bytes.len() as u64;
         
         // Sync if needed
         if self.sync_on_write {
-            self.file.sync_data().map_err(|e| Error::IoError(e))?;
+            self.file.sync_data().map_err(|e| WalError::Io(e))?;
         }
         
         Ok(entry_pos)
@@ -144,27 +144,27 @@ impl WalLog {
     
     /// Force sync the WAL to disk
     pub fn sync(&mut self) -> Result<()> {
-        self.file.sync_data().map_err(|e| Error::IoError(e))?;
+        self.file.sync_data().map_err(|e| WalError::Io(e))?;
         Ok(())
     }
     
     /// Read an entry at the given position
     pub fn read_at(&mut self, position: u64) -> Result<WalEntry> {
         if position < WAL_HEADER_SIZE as u64 || position >= self.position {
-            return Err(Error::Other(format!("Invalid WAL position: {}", position)));
+            return Err(WalError::Other(format!("Invalid WAL position: {}", position)));
         }
         
         // Seek to the position
         self.file.seek(SeekFrom::Start(position))
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         // Read a buffer (start with 4KB, which should be enough for most entries)
         let mut buffer = vec![0u8; 4096];
         let bytes_read = self.file.read(&mut buffer)
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         if bytes_read == 0 {
-            return Err(Error::Other("Unexpected end of WAL file".to_string()));
+            return Err(WalError::Other("Unexpected end of WAL file".to_string()));
         }
         
         buffer.truncate(bytes_read);
@@ -179,7 +179,7 @@ impl WalLog {
     pub fn iterate(&mut self) -> Result<WalIterator> {
         // Seek to the beginning (after header)
         self.file.seek(SeekFrom::Start(WAL_HEADER_SIZE as u64))
-            .map_err(|e| Error::IoError(e))?;
+            .map_err(|e| WalError::Io(e))?;
         
         Ok(WalIterator {
             file: &mut self.file,
@@ -206,7 +206,7 @@ impl WalLog {
     
     /// Close the WAL file
     pub fn close(self) -> Result<()> {
-        self.file.sync_all().map_err(|e| Error::IoError(e))?;
+        self.file.sync_all().map_err(|e| WalError::Io(e))?;
         Ok(())
     }
 }
@@ -249,15 +249,15 @@ impl<'a> Iterator for WalIterator<'a> {
                         
                         // Seek to the next entry
                         if let Err(e) = self.file.seek(SeekFrom::Start(self.position)) {
-                            return Some(Err(Error::IoError(e)));
+                            return Some(Err(WalError::Io(e)));
                         }
                         
                         Some(Ok((entry_pos, entry)))
                     }
-                    Err(e) => Some(Err(e)),
+                    Err(e) => Some(Err(e.into())),
                 }
             }
-            Err(e) => Some(Err(Error::IoError(e))),
+            Err(e) => Some(Err(WalError::Io(e))),
         }
     }
 }
