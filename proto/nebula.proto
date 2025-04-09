@@ -1,0 +1,98 @@
+// File: proto/nebula.proto
+syntax = "proto3";
+
+package nebula;
+
+import "google/protobuf/empty.proto";
+
+service NebulaDB {
+  rpc ListDatabases(google.protobuf.Empty) returns (DatabaseList);
+  rpc CreateDatabase(CreateDatabaseRequest) returns (Database);
+  rpc DeleteDatabase(DeleteDatabaseRequest) returns (google.protobuf.Empty);
+
+  rpc ListCollections(ListCollectionsRequest) returns (CollectionList);
+  rpc CreateCollection(CreateCollectionRequest) returns (Collection);
+  rpc DeleteCollection(DeleteCollectionRequest) returns (google.protobuf.Empty);
+
+  rpc GetDocument(GetDocumentRequest) returns (Document);
+  rpc InsertDocument(InsertDocumentRequest) returns (Document);
+  rpc UpdateDocument(UpdateDocumentRequest) returns (Document);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (google.protobuf.Empty);
+
+  rpc Query(QueryRequest) returns (stream Document);
+}
+
+// Define all the messages your RPCs use:
+message DatabaseList {
+  repeated string names = 1;
+}
+
+message CreateDatabaseRequest {
+  string name = 1;
+}
+
+message Database {
+  string name = 1;
+}
+
+message DeleteDatabaseRequest {
+  string name = 1;
+}
+
+message ListCollectionsRequest {
+  string database_name = 1;
+}
+
+message CollectionList {
+  repeated string collections = 1;
+}
+
+message CreateCollectionRequest {
+  string database_name = 1;
+  string collection_name = 2;
+}
+
+message Collection {
+  string name = 1;
+}
+
+message DeleteCollectionRequest {
+  string database_name = 1;
+  string collection_name = 2;
+}
+
+message GetDocumentRequest {
+  string database = 1;
+  string collection = 2;
+  string id = 3;
+}
+
+message InsertDocumentRequest {
+  string database = 1;
+  string collection = 2;
+  string data = 3;
+}
+
+message UpdateDocumentRequest {
+  string database = 1;
+  string collection = 2;
+  string id = 3;
+  string data = 4;
+}
+
+message DeleteDocumentRequest {
+  string database = 1;
+  string collection = 2;
+  string id = 3;
+}
+
+message Document {
+  string id = 1;
+  string data = 2;
+}
+
+message QueryRequest {
+  string database = 1;
+  string collection = 2;
+  string query = 3;
+}

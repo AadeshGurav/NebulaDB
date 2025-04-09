@@ -8,3 +8,4 @@ Cargo.lock
 /nebuladb_data/
 .nebuladb_history
 data/*
+config.json
