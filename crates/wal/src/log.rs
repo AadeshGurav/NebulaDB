@@ -2,7 +2,7 @@
 //!
 //! This module handles the low-level operations on WAL log files.
 
-use crate::entry::{WalEntry, EntryType};
+use crate::entry::WalEntry;
 use nebuladb_core::{Error, Result};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
@@ -205,7 +205,7 @@ impl WalLog {
     }
     
     /// Close the WAL file
-    pub fn close(mut self) -> Result<()> {
+    pub fn close(self) -> Result<()> {
         self.file.sync_all().map_err(|e| Error::IoError(e))?;
         Ok(())
     }
