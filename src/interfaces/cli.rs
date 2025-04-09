@@ -4,7 +4,7 @@ use nebuladb_core::{Result, Error};
 use crate::database::Database;
 use crate::util::{is_valid_json, format_output, matches_query};
 use serde_json::Value as JsonValue;
-use crate::interfaces::{InterfaceManager, InterfaceManagerRef};
+use crate::interfaces::InterfaceManagerRef;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -96,6 +96,8 @@ impl CliInterface {
                         "scan" => self.scan_collection(&parts),
                         "find" => self.find_documents(&parts),
                         
+                        // System commands
+                        "clear" => print!("\x1B[2J\x1B[1;1H"),  // ANSI escape code to clear screen and move cursor to top
                         "exit" | "quit" => {
                             println!("Exiting NebulaDB. Goodbye!");
                             break;
@@ -149,6 +151,8 @@ impl CliInterface {
         println!("  scan <collection>                   - List all documents in a collection");
         println!("  find <collection> [query]           - Find documents in a collection");
         println!();
+        println!("  System commands:");
+        println!("  clear                               - Clear the terminal screen");
         println!("  exit                                - Exit the program");
     }
     
